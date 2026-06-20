@@ -1,4 +1,6 @@
 import { chromium, Browser, BrowserContext, Page } from "playwright";
+import { existsSync, readFileSync, unlinkSync } from "fs";
+import { join } from "path";
 import { getSessionStatePath, saveSessionState } from "./cookies";
 
 export class BrowserManager {
@@ -18,9 +20,65 @@ export class BrowserManager {
   }
 
   /**
+   * Automatically hot-reloads cookies.json directly into the active browser memory context.
+   */
+  private async checkAndHotReloadCookies(): Promise<void> {
+    const cookiesJsonPath = join(process.cwd(), "cookies.json");
+    if (existsSync(cookiesJsonPath) && this.context) {
+      try {
+        console.log("[Browser] Active browser context detected cookies.json. Hot-reloading cookies into memory...");
+        const rawData = readFileSync(cookiesJsonPath, "utf-8");
+        const chromeCookies = JSON.parse(rawData);
+        
+        if (Array.isArray(chromeCookies)) {
+          const playwrightCookies = chromeCookies.map((c: any) => {
+            let sameSite: "Lax" | "Strict" | "None" = "Lax";
+            if (c.sameSite) {
+              const ss = String(c.sameSite).toLowerCase();
+              if (ss === "no_restriction" || ss === "none") {
+                sameSite = "None";
+              } else if (ss === "strict") {
+                sameSite = "Strict";
+              } else if (ss === "lax") {
+                sameSite = "Lax";
+              }
+            }
+            return {
+              name: c.name,
+              value: c.value,
+              domain: c.domain,
+              path: c.path,
+              expires: typeof c.expirationDate === "number" ? c.expirationDate : undefined,
+              httpOnly: !!c.httpOnly,
+              secure: !!c.secure,
+              sameSite
+            };
+          });
+
+          // Hot load into the running browser context
+          await this.context.addCookies(playwrightCookies);
+          console.log(`[Browser] Hot-loaded ${playwrightCookies.length} cookies into memory context.`);
+
+          // Persist back to session.json immediately
+          await this.persistSession();
+
+          // Delete cookies.json
+          unlinkSync(cookiesJsonPath);
+          console.log("[Browser] Deleted cookies.json after hot-reload.");
+        }
+      } catch (err) {
+        console.error("[Browser] Failed to hot-reload cookies.json:", err);
+      }
+    }
+  }
+
+  /**
    * Initializes or returns the active browser instance, context, and a page.
    */
   public async getPage(): Promise<Page> {
+    // Attempt to hot-reload cookies if cookies.json is present
+    await this.checkAndHotReloadCookies();
+
     if (this.mainPage && !this.mainPage.isClosed()) {
       return this.mainPage;
     }
@@ -61,6 +119,20 @@ export class BrowserManager {
       viewport: { width: 1280, height: 720 },
       locale: "en-US",
       timezoneId: "America/New_York"
+    });
+
+    // Auto-save session cookies when set-cookie headers are received from server responses
+    let saveTimeout: any = null;
+    this.context.on("response", (response) => {
+      const headers = response.headers();
+      if (headers["set-cookie"]) {
+        if (saveTimeout) clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(async () => {
+          try {
+            await this.persistSession();
+          } catch {}
+        }, 1000);
+      }
     });
 
     // Simple anti-detect scripts
@@ -123,6 +195,13 @@ export class BrowserManager {
    * Closes the browser and cleans up resources.
    */
   public async close(): Promise<void> {
+    if (this.context) {
+      try {
+        await this.persistSession();
+      } catch (err) {
+        console.warn("[Browser] Error saving session state during browser cleanup:", err);
+      }
+    }
     if (this.mainPage) {
       try {
         await this.mainPage.close();
