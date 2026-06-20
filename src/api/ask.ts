@@ -26,6 +26,63 @@ function resetConversationManager() {
 }
 
 /**
+ * Helper to parse, extract, or convert the ChatGPT generated text to a JSON payload.
+ */
+function parseOrFormatResponse(answer: string): { status: number; body: any } {
+  const trimmed = answer.trim();
+
+  // Helper to strip markdown JSON blocks
+  const cleanMarkdown = (str: string): string => {
+    let cleaned = str;
+    cleaned = cleaned.replace(/^```json\s*/i, "");
+    cleaned = cleaned.replace(/^```\s*/, "");
+    cleaned = cleaned.replace(/\s*```$/, "");
+    return cleaned.trim();
+  };
+
+  const cleaned = cleanMarkdown(trimmed);
+
+  // Try direct parse
+  try {
+    const parsed = JSON.parse(cleaned);
+    return { status: 200, body: parsed };
+  } catch {}
+
+  // Try extracting JSON object brackets
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      const parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+      return { status: 200, body: parsed };
+    } catch {}
+  }
+
+  // Try extracting JSON array brackets
+  const firstBracket = cleaned.indexOf("[");
+  const lastBracket = cleaned.lastIndexOf("]");
+  if (firstBracket !== -1 && lastBracket > firstBracket) {
+    try {
+      const parsed = JSON.parse(cleaned.slice(firstBracket, lastBracket + 1));
+      return { status: 200, body: parsed };
+    } catch {}
+  }
+
+  // Fallback: If it's not JSON, convert it to JSON (wrap it in an object)
+  try {
+    return {
+      status: 200,
+      body: { answer: trimmed }
+    };
+  } catch (err: any) {
+    return {
+      status: 400,
+      body: { success: false, error: "Response is not in JSON format data and could not be converted." }
+    };
+  }
+}
+
+/**
  * Main HTTP request handler compatible with Bun.serve
  */
 export async function handleRequest(req: Request): Promise<Response> {
@@ -203,14 +260,10 @@ export async function handleRequest(req: Request): Promise<Response> {
       });
 
       if (result.success) {
+        const parsedResponse = parseOrFormatResponse(result.answer);
         return new Response(
-          JSON.stringify({
-            success: true,
-            answer: result.answer,
-            method: result.method,
-            conversationId: result.conversationId
-          }),
-          { status: 200, headers }
+          JSON.stringify(parsedResponse.body),
+          { status: parsedResponse.status, headers }
         );
       } else {
         return new Response(

@@ -7,6 +7,7 @@ import { ResponseExtractor } from "./extractor";
 export interface AskResult {
   success: boolean;
   answer?: string;
+  rawResponse?: string;
   method?: "network" | "dom";
   conversationId?: string | null;
   error?: string;
@@ -30,7 +31,7 @@ export class ConversationManager {
     this.page.on("request", (request) => {
       const headers = request.headers();
       const authHeader = headers["authorization"];
-      if (authHeader && authHeader.startsWith("Bearer ") && request.url().includes("/backend-api/")) {
+      if (authHeader && authHeader.startsWith("Bearer ") && (request.url().includes("/backend-api/") || request.url().includes("/backend-anon/"))) {
         if (this.authToken !== authHeader) {
           this.authToken = authHeader;
           console.log("[Conversation] Successfully captured/updated ChatGPT API Bearer token.");
@@ -47,15 +48,25 @@ export class ConversationManager {
    */
   public async ask(prompt: string, deleteConv = true): Promise<AskResult> {
     try {
-      console.log("[Conversation] Navigating to ChatGPT with prompt URL parameter...");
+      console.log("[Conversation] Preparing network interceptor...");
       
       // Load root URL with prompt query parameter to automatically pre-fill
       const targetUrl = `https://chatgpt.com/?prompt=${encodeURIComponent(prompt)}`;
-      await this.page.goto(targetUrl);
       
       // Reset extractor state
       this.extractor.reset();
 
+      // Listen for the next POST conversation API call BEFORE navigating
+      // to capture both auto-submitted and manually submitted queries.
+      // Make sure we check for /f/conversation and exclude /prepare.
+      const responsePromise = this.page.waitForResponse(
+        res => res.url().includes("/f/conversation") && !res.url().includes("/prepare") && res.request().method() === "POST",
+        { timeout: 45000 }
+      ).catch(() => null);
+
+      console.log("[Conversation] Navigating to ChatGPT with prompt URL parameter...");
+      await this.page.goto(targetUrl);
+      
       // Check if we are logged in (prompt textarea must exist)
       try {
         await this.page.waitForSelector("#prompt-textarea", { timeout: 15000 });
@@ -63,13 +74,26 @@ export class ConversationManager {
         throw new Error("ChatGPT textarea not found. Session might be expired or not logged in. Please run 'bun run src/browser/session.ts' to authenticate.");
       }
 
-      // Submit the prompt
+      // Submit the prompt (this will either let the auto-submit continue or click the submit button)
       await submitPrompt(this.page, prompt);
 
-      // Wait for response generation to complete
-      await waitForGenerationComplete(this.page);
+      console.log("[Conversation] Waiting for conversation network stream response...");
+      const response = await responsePromise;
 
-      // Extract response
+      if (response) {
+        console.log("[Conversation] Intercepted stream response. Waiting for network completion...");
+        try {
+          // Wait for the full body stream to finish downloading
+          await response.finished();
+          console.log("[Conversation] Network stream completed.");
+        } catch (err) {
+          console.warn("[Conversation] Error waiting for network completion:", err);
+        }
+      } else {
+        console.log("[Conversation] No conversation response intercepted.");
+      }
+
+      // Extract response (automatically falls back to DOM if network failed or parsing is empty)
       const extraction = await this.extractor.extractResponse();
       
       // Extract Conversation ID from URL
@@ -89,6 +113,7 @@ export class ConversationManager {
       return {
         success: true,
         answer: extraction.text,
+        rawResponse: extraction.raw || "",
         method: extraction.method,
         conversationId
       };
