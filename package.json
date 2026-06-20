@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "start": "bun run index.ts",
-    "login": "bun run src/browser/session.ts"
+    "login": "bun run src/browser/session.ts",
+    "scrape": "bun run src/scraper/google.ts"
   },
   "dependencies": {
     "playwright": "^1.44.0"

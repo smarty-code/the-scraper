@@ -279,6 +279,42 @@ export async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // POST /scrape (Standalone Google scraper)
+  if (url.pathname === "/scrape" && req.method === "POST") {
+    try {
+      const body = await req.json();
+      const keyword = body.keyword;
+      const startPage = parseInt(body.startPage, 10) || 1;
+      const endPage = parseInt(body.endPage, 10) || startPage;
+
+      if (!keyword || typeof keyword !== "string") {
+        return new Response(JSON.stringify({ success: false, error: "keyword field is required and must be a string." }), { status: 400, headers });
+      }
+
+      console.log(`[API] Standalone scraper request for: "${keyword}" (Pages ${startPage} to ${endPage})`);
+
+      const result = await queue.add<any>(async () => {
+        const { scrapeGoogle } = await import("../scraper/google");
+        return await scrapeGoogle(keyword, startPage, endPage);
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: `Successfully scraped pages ${startPage} to ${endPage} for keyword: ${keyword}`,
+          data: {
+            keyword: result.keyword,
+            scrapedAt: result.scrapedAt,
+            pagesCount: result.pages.length
+          }
+        }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(JSON.stringify({ success: false, error: "Scraping failed: " + err.message }), { status: 500, headers });
+    }
+  }
+
   // 404 Route
   return new Response(JSON.stringify({ error: "Endpoint not found" }), { status: 404, headers });
 }
