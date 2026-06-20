@@ -238,25 +238,42 @@ export async function handleRequest(req: Request): Promise<Response> {
 
       console.log(`[API] Enqueuing prompt request: "${prompt.slice(0, 40)}..." (Pending queue size: ${queue.getPendingLength()})`);
 
-      // Add prompt execution to the task queue
+      // Add prompt execution to the task queue with a robust retry mechanism
       const result = await queue.add<AskResult>(async () => {
-        try {
-          const manager = await getConversationManager();
-          let res = await manager.ask(prompt, deleteConv);
-          
-          // Re-try once if target was closed/crashed
-          if (!res.success && res.error && (res.error.includes("Target closed") || res.error.includes("context has been closed"))) {
-            console.log("[API] Target closed. Re-initializing browser session and retrying...");
-            resetConversationManager();
-            await BrowserManager.getInstance().close();
-            const retryManager = await getConversationManager();
-            res = await retryManager.ask(prompt, deleteConv);
+        const maxAttempts = 3;
+        let lastResult: AskResult = { success: false, error: "Initial state" };
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            console.log(`[API] Processing prompt attempt ${attempt}/${maxAttempts}...`);
+            const manager = await getConversationManager();
+            lastResult = await manager.ask(prompt, deleteConv);
+
+            if (lastResult.success) {
+              return lastResult;
+            }
+
+            console.warn(`[API] Attempt ${attempt} failed: ${lastResult.error}`);
+          } catch (err: any) {
+            lastResult = { success: false, error: err.message || String(err) };
+            console.warn(`[API] Attempt ${attempt} encountered exception: ${lastResult.error}`);
           }
-          
-          return res;
-        } catch (err: any) {
-          return { success: false, error: err.message || String(err) };
+
+          // If we failed and have remaining attempts, re-initialize the browser
+          if (attempt < maxAttempts) {
+            console.log(`[API] Re-initializing browser session before retry...`);
+            resetConversationManager();
+            try {
+              await BrowserManager.getInstance().close();
+            } catch (closeErr) {
+              console.warn("[API] Error closing browser manager on retry:", closeErr);
+            }
+            // Small delay before initiating retry
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
         }
+
+        return lastResult;
       });
 
       if (result.success) {

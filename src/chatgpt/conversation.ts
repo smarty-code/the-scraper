@@ -65,7 +65,7 @@ export class ConversationManager {
       ).catch(() => null);
 
       console.log("[Conversation] Navigating to ChatGPT with prompt URL parameter...");
-      await this.page.goto(targetUrl);
+      await this.page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       
       // Check if we are logged in (prompt textarea must exist)
       try {
