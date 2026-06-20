@@ -2,9 +2,11 @@ import { BrowserManager } from "../browser/browser";
 import { ConversationManager, AskResult } from "../chatgpt/conversation";
 import { TaskQueue } from "../queue/worker";
 import { hasSession, deleteSession } from "../browser/cookies";
+import { LighthouseEngine } from "../scraper/lighthouse";
 
 const queue = new TaskQueue(1);
 let conversationManager: ConversationManager | null = null;
+const lighthouseEngine = new LighthouseEngine();
 
 /**
  * Lazy loads and returns the conversation manager.
@@ -151,6 +153,28 @@ export async function handleRequest(req: Request): Promise<Response> {
     <h3><span class="method">POST</span><code>/session/reset</code></h3>
     <p>Reset cookies, clear local session, and close browser context.</p>
     <pre><code>curl -X POST http://localhost:${url.port || "3000"}/session/reset</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">POST</span><code>/scrape</code></h3>
+    <p>Perform a standalone Google SERP scrape for a keyword.</p>
+    <pre><code>curl -X POST http://localhost:${url.port || "3000"}/scrape \\
+  -H "Content-Type: application/json" \\
+  -d '{"keyword": "reddit marketing tool", "startPage": 1, "endPage": 2}'</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">POST</span><code>/api/lighthouse</code></h3>
+    <p>Submit a URL for a Lighthouse audit report via Google PageSpeed API.</p>
+    <pre><code>curl -X POST http://localhost:${url.port || "3000"}/api/lighthouse \\
+  -H "Content-Type: application/json" \\
+  -d '{"url": "https://github.com"}'</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/lighthouse/:domain</code></h3>
+    <p>Retrieve the latest saved Lighthouse audit report for a domain.</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/lighthouse/github.com</code></pre>
   </div>
 </body>
 </html>`;
@@ -312,6 +336,76 @@ export async function handleRequest(req: Request): Promise<Response> {
       );
     } catch (err: any) {
       return new Response(JSON.stringify({ success: false, error: "Scraping failed: " + err.message }), { status: 500, headers });
+    }
+  }
+
+  // POST /api/lighthouse (Generate Lighthouse report)
+  if (url.pathname === "/api/lighthouse" && req.method === "POST") {
+    try {
+      const body = await req.json();
+      const targetUrl = body.url;
+
+      if (!targetUrl || typeof targetUrl !== "string") {
+        return new Response(
+          JSON.stringify({ success: false, error: "url field is required and must be a string." }),
+          { status: 400, headers }
+        );
+      }
+
+      console.log(`[API] Lighthouse audit request received for URL: ${targetUrl}`);
+      const report = await lighthouseEngine.generate(targetUrl);
+      await lighthouseEngine.save(report);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          domain: report.domain,
+          saved: true,
+          path: `reports/${report.domain}.json`
+        }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Lighthouse generation failed: " + err.message }),
+        { status: 500, headers }
+      );
+    }
+  }
+
+  // GET /api/lighthouse/:domain (Read existing Lighthouse report)
+  if (url.pathname.startsWith("/api/lighthouse/") && req.method === "GET") {
+    try {
+      const domain = url.pathname.slice("/api/lighthouse/".length);
+      if (!domain) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Domain name is required." }),
+          { status: 400, headers }
+        );
+      }
+
+      console.log(`[API] Lighthouse get report request received for domain: ${domain}`);
+      const report = await lighthouseEngine.get(domain);
+
+      if (!report) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Lighthouse report not found for domain: ${domain}` }),
+          { status: 404, headers }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          domain: report.domain,
+          report: report.report
+        }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to retrieve Lighthouse report: " + err.message }),
+        { status: 500, headers }
+      );
     }
   }
 

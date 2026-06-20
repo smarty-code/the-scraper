@@ -6,7 +6,8 @@
   "scripts": {
     "start": "bun run index.ts",
     "login": "bun run src/browser/session.ts",
-    "scrape": "bun run src/scraper/google.ts"
+    "scrape": "bun run src/scraper/google.ts",
+    "lighthouse": "bun run src/scraper/lighthouse.ts"
   },
   "dependencies": {
     "playwright": "^1.44.0"
