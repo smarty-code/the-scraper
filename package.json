@@ -10,6 +10,7 @@
     "lighthouse": "bun run src/scraper/lighthouse.ts"
   },
   "dependencies": {
+    "mongodb": "^7.3.0",
     "playwright": "^1.44.0"
   },
   "devDependencies": {

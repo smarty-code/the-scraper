@@ -1,12 +1,8 @@
-import { existsSync, promises as fs } from "fs";
-import { join } from "path";
-
-export interface LighthouseReport {
-  url: string;
-  domain: string;
-  generatedAt: string;
-  report: any;
-}
+import "../polyfill";
+import { 
+  LIGHTHOUSE_REPORTS_COLLECTION, 
+  LighthouseReportDoc as LighthouseReport 
+} from "../database/models";
 
 export interface ILighthouseEngine {
   generate(url: string): Promise<LighthouseReport>;
@@ -31,8 +27,6 @@ export function getDomain(urlStr: string): string {
 }
 
 export class LighthouseEngine implements ILighthouseEngine {
-  private reportsDir = join(process.cwd(), "reports");
-
   /**
    * Generates a report from the Google PageSpeed Insights API.
    */
@@ -82,36 +76,40 @@ export class LighthouseEngine implements ILighthouseEngine {
   }
 
   /**
-   * Saves the normalized report to the filesystem at reports/domain.json.
+   * Saves the normalized report to MongoDB.
    */
   async save(report: LighthouseReport): Promise<void> {
-    await fs.mkdir(this.reportsDir, { recursive: true });
-    const filePath = join(this.reportsDir, `${report.domain}.json`);
-    
-    console.log(`[LighthouseEngine] Saving report to: ${filePath}`);
-    await fs.writeFile(filePath, JSON.stringify(report, null, 2), "utf-8");
+    console.log(`[LighthouseEngine] Saving report to MongoDB collection ${LIGHTHOUSE_REPORTS_COLLECTION}...`);
+    const { connectToDatabase } = await import("../database/mongo");
+    const db = await connectToDatabase();
+    await db.collection(LIGHTHOUSE_REPORTS_COLLECTION).updateOne(
+      { domain: report.domain },
+      { $set: report },
+      { upsert: true }
+    );
+    console.log(`[LighthouseEngine] Report saved successfully to MongoDB collection ${LIGHTHOUSE_REPORTS_COLLECTION}.`);
   }
 
   /**
-   * Retrieves an existing report for the domain from the filesystem.
+   * Retrieves an existing report for the domain from MongoDB.
    */
   async get(domain: string): Promise<LighthouseReport | null> {
     const sanitizedDomain = domain.trim().toLowerCase().replace(/^www\./i, "");
-    const filePath = join(this.reportsDir, `${sanitizedDomain}.json`);
-    
-    if (!existsSync(filePath)) {
+    console.log(`[LighthouseEngine] Retrieving report for domain: ${sanitizedDomain} from MongoDB collection ${LIGHTHOUSE_REPORTS_COLLECTION}...`);
+    const { connectToDatabase } = await import("../database/mongo");
+    const db = await connectToDatabase();
+    const doc = await db.collection(LIGHTHOUSE_REPORTS_COLLECTION).findOne({ domain: sanitizedDomain });
+    if (!doc) {
       console.log(`[LighthouseEngine] Report not found for domain: ${sanitizedDomain}`);
       return null;
     }
-
-    try {
-      console.log(`[LighthouseEngine] Reading report from: ${filePath}`);
-      const content = await fs.readFile(filePath, "utf-8");
-      return JSON.parse(content) as LighthouseReport;
-    } catch (err: any) {
-      console.error(`[LighthouseEngine] Error reading report for ${sanitizedDomain}:`, err);
-      return null;
-    }
+    // Cast database document properties
+    return {
+      url: doc.url,
+      domain: doc.domain,
+      generatedAt: doc.generatedAt,
+      report: doc.report
+    } as LighthouseReport;
   }
 }
 
@@ -135,6 +133,8 @@ if (isCli) {
       const engine = new LighthouseEngine();
       const report = await engine.generate(targetUrl);
       await engine.save(report);
+      const { closeDatabaseConnection } = await import("../database/mongo");
+      await closeDatabaseConnection();
       console.log(`[Lighthouse CLI] Successfully generated and saved report for ${targetUrl}`);
       process.exit(0);
     } catch (err) {

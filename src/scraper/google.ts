@@ -1,3 +1,4 @@
+import "../polyfill";
 import { existsSync, promises as fs } from "fs";
 import { join } from "path";
 import { BrowserManager } from "../browser/browser";
@@ -98,24 +99,41 @@ export async function scrapeGoogle(keyword: string, startPage: number, endPage: 
     }
   }
 
+  // Save to MongoDB collection CRAWLER_DATA_COLLECTION, excluding HTML property
+  try {
+    const { connectToDatabase } = await import("../database/mongo");
+    const { CRAWLER_DATA_COLLECTION, CrawlerDataDoc } = await import("../database/models");
+    const db = await connectToDatabase();
+    
+    // Create copy of pages data without HTML
+    const dbPages = pagesData.map(p => ({
+      pageNumber: p.pageNumber,
+      url: p.url,
+      results: p.results
+    }));
+
+    const dbPayload: CrawlerDataDoc = {
+      keyword,
+      scrapedAt: new Date().toISOString(),
+      pages: dbPages
+    };
+
+    console.log(`[Database] Saving raw scraper results for keyword "${keyword}" to ${CRAWLER_DATA_COLLECTION}...`);
+    await db.collection(CRAWLER_DATA_COLLECTION).updateOne(
+      { keyword },
+      { $set: dbPayload },
+      { upsert: true }
+    );
+    console.log(`[Database] Scraped results saved to MongoDB ${CRAWLER_DATA_COLLECTION}.`);
+  } catch (dbErr: any) {
+    console.error("[Database] Failed to save raw scraped results to MongoDB:", dbErr);
+  }
+
   const payload = {
     keyword,
     scrapedAt: new Date().toISOString(),
     pages: pagesData
   };
-
-  // Format file name: raw_<sanitized_query>.json
-  const sanitized = keyword.toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  const filename = `raw_${sanitized}.json`;
-  
-  const outputDir = join(process.cwd(), "data", "raw");
-  await fs.mkdir(outputDir, { recursive: true });
-  const outputPath = join(outputDir, filename);
-
-  await fs.writeFile(outputPath, JSON.stringify(payload, null, 2), "utf-8");
-  console.log(`[Scraper] Saved results to: ${outputPath}`);
 
   return payload;
 }
@@ -141,6 +159,8 @@ if (isCli) {
     try {
       await scrapeGoogle(keyword, startPage, endPage);
       await BrowserManager.getInstance().close();
+      const { closeDatabaseConnection } = await import("../database/mongo");
+      await closeDatabaseConnection();
       process.exit(0);
     } catch (err) {
       console.error("[Scraper CLI] Error during scraping execution:", err);

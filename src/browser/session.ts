@@ -1,3 +1,4 @@
+import "../polyfill";
 import { BrowserManager } from "./browser";
 
 // Set headed mode for interactive login

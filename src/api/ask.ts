@@ -157,23 +157,53 @@ export async function handleRequest(req: Request): Promise<Response> {
 
   <div class="endpoint">
     <h3><span class="method">POST</span><code>/scrape</code></h3>
-    <p>Perform a standalone Google SERP scrape for a keyword.</p>
+    <p>Perform Google SERP scraping and run the AI refinement & ranking pipeline. Saves raw data to <code>crawler_data</code> and refined data (confidence >= 0.5) to <code>refined_scrapes</code> collections in MongoDB.</p>
     <pre><code>curl -X POST http://localhost:${url.port || "3000"}/scrape \\
   -H "Content-Type: application/json" \\
-  -d '{"keyword": "reddit marketing tool", "startPage": 1, "endPage": 2}'</code></pre>
+  -d '{"keyword": "reddit marketing tool", "startPage": 1, "endPage": 1, "instructions": "Only tools or SaaS for automation"}'</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/keywords</code></h3>
+    <p>List all scraped/refined keywords with timestamps, result counts, and refinement status.</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/keywords</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/scrapes</code></h3>
+    <p>List all raw scrape records (summaries: keyword, timestamp, page count, result count).</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/scrapes</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/scrapes/:keyword</code></h3>
+    <p>Retrieve full raw scrape data (all pages and organic results) for a specific keyword.</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/scrapes/reddit%20marketing%20tool</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/refined/:keyword</code></h3>
+    <p>Retrieve the latest saved AI refined search results for a keyword from MongoDB.</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/refined/reddit%20marketing%20tool</code></pre>
   </div>
 
   <div class="endpoint">
     <h3><span class="method">POST</span><code>/api/lighthouse</code></h3>
-    <p>Submit a URL for a Lighthouse audit report via Google PageSpeed API.</p>
+    <p>Submit a URL for a Lighthouse audit report via Google PageSpeed API. Stored in MongoDB.</p>
     <pre><code>curl -X POST http://localhost:${url.port || "3000"}/api/lighthouse \\
   -H "Content-Type: application/json" \\
   -d '{"url": "https://github.com"}'</code></pre>
   </div>
 
   <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/lighthouse</code></h3>
+    <p>List all audited domains with their latest performance scores.</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/lighthouse</code></pre>
+  </div>
+
+  <div class="endpoint">
     <h3><span class="method">GET</span><code>/api/lighthouse/:domain</code></h3>
-    <p>Retrieve the latest saved Lighthouse audit report for a domain.</p>
+    <p>Retrieve the full Lighthouse audit report for a specific domain from MongoDB.</p>
     <pre><code>curl http://localhost:${url.port || "3000"}/api/lighthouse/github.com</code></pre>
   </div>
 </body>
@@ -303,39 +333,253 @@ export async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
-  // POST /scrape (Standalone Google scraper)
+  // POST /scrape (Standalone Google scraper + AI Refinement)
   if (url.pathname === "/scrape" && req.method === "POST") {
     try {
       const body = await req.json();
       const keyword = body.keyword;
       const startPage = parseInt(body.startPage, 10) || 1;
       const endPage = parseInt(body.endPage, 10) || startPage;
+      const instructions = body.instructions || "";
 
       if (!keyword || typeof keyword !== "string") {
         return new Response(JSON.stringify({ success: false, error: "keyword field is required and must be a string." }), { status: 400, headers });
       }
 
-      console.log(`[API] Standalone scraper request for: "${keyword}" (Pages ${startPage} to ${endPage})`);
+      console.log(`[API] Scrape and Refine request for keyword: "${keyword}" (Pages ${startPage} to ${endPage})`);
 
       const result = await queue.add<any>(async () => {
+        // 1. Scrape Google results (saves raw results to crawler_data collection in MongoDB)
         const { scrapeGoogle } = await import("../scraper/google");
-        return await scrapeGoogle(keyword, startPage, endPage);
+        const rawPayload = await scrapeGoogle(keyword, startPage, endPage);
+
+        // Collect all items
+        const allResults: any[] = [];
+        for (const page of rawPayload.pages) {
+          if (Array.isArray(page.results)) {
+            allResults.push(...page.results);
+          }
+        }
+
+        // 2. Refine results via ChatGPT (saves filtered results to refined_scrapes collection in MongoDB)
+        const { refineResults, saveRefinedScrape } = await import("../scraper/refine");
+        const manager = await getConversationManager();
+        
+        let refinedResults: any[] = [];
+        let refinementError: string | null = null;
+        try {
+          refinedResults = await refineResults(manager, keyword, allResults, instructions);
+          await saveRefinedScrape(keyword, instructions, refinedResults);
+        } catch (refineErr: any) {
+          console.error("[API] Refinement failed:", refineErr);
+          refinementError = refineErr.message || String(refineErr);
+        }
+
+        return {
+          keyword,
+          pagesScraped: rawPayload.pages.length,
+          rawResultsCount: allResults.length,
+          refinedResultsCount: refinedResults.length,
+          refinedResults,
+          error: refinementError
+        };
       });
+
+      if (result.error) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "Refinement failed: " + result.error,
+            rawResultsCount: result.rawResultsCount
+          }),
+          { status: 500, headers }
+        );
+      }
 
       return new Response(
         JSON.stringify({
           success: true,
-          message: `Successfully scraped pages ${startPage} to ${endPage} for keyword: ${keyword}`,
-          data: {
-            keyword: result.keyword,
-            scrapedAt: result.scrapedAt,
-            pagesCount: result.pages.length
-          }
+          keyword: result.keyword,
+          pagesScraped: result.pagesScraped,
+          rawResultsCount: result.rawResultsCount,
+          refinedResultsCount: result.refinedResultsCount,
+          refinedResults: result.refinedResults
         }),
         { status: 200, headers }
       );
     } catch (err: any) {
-      return new Response(JSON.stringify({ success: false, error: "Scraping failed: " + err.message }), { status: 500, headers });
+      return new Response(JSON.stringify({ success: false, error: "Scraping and refinement pipeline failed: " + err.message }), { status: 500, headers });
+    }
+  }
+
+  // GET /api/refined/:keyword (Read AI-refined scraper results)
+  if (url.pathname.startsWith("/api/refined/") && req.method === "GET") {
+    try {
+      const encodedKeyword = url.pathname.slice("/api/refined/".length);
+      const keyword = decodeURIComponent(encodedKeyword).trim();
+      if (!keyword) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Keyword is required." }),
+          { status: 400, headers }
+        );
+      }
+
+      console.log(`[API] Fetching refined scraper results for keyword: "${keyword}"`);
+      const { connectToDatabase } = await import("../database/mongo");
+      const { REFINED_SCRAPES_COLLECTION } = await import("../database/models");
+      const db = await connectToDatabase();
+      const doc = await db.collection(REFINED_SCRAPES_COLLECTION).findOne({ keyword });
+
+      if (!doc) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Refined scraper results not found for keyword: ${keyword}` }),
+          { status: 404, headers }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          keyword: doc.keyword,
+          refinedAt: doc.refinedAt,
+          instructions: doc.instructions,
+          results: doc.results
+        }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to retrieve refined scraper results: " + err.message }),
+        { status: 500, headers }
+      );
+    }
+  }
+
+  // GET /api/keywords (List all scraped/refined keywords)
+  if (url.pathname === "/api/keywords" && req.method === "GET") {
+    try {
+      console.log("[API] Fetching all keyword records...");
+      const { connectToDatabase } = await import("../database/mongo");
+      const { CRAWLER_DATA_COLLECTION, REFINED_SCRAPES_COLLECTION } = await import("../database/models");
+      const db = await connectToDatabase();
+
+      // Fetch all raw scrape keywords
+      const rawDocs = await db.collection(CRAWLER_DATA_COLLECTION)
+        .find({}, { projection: { keyword: 1, scrapedAt: 1, pages: 1, _id: 0 } })
+        .toArray();
+
+      // Fetch all refined keywords
+      const refinedDocs = await db.collection(REFINED_SCRAPES_COLLECTION)
+        .find({}, { projection: { keyword: 1, refinedAt: 1, results: 1, instructions: 1, _id: 0 } })
+        .toArray();
+
+      // Build a merged keyword index
+      const refinedMap = new Map<string, any>();
+      for (const rd of refinedDocs) {
+        refinedMap.set(rd.keyword, rd);
+      }
+
+      const keywords = rawDocs.map(doc => {
+        const totalResults = doc.pages?.reduce((sum: number, p: any) => sum + (p.results?.length || 0), 0) || 0;
+        const refined = refinedMap.get(doc.keyword);
+        return {
+          keyword: doc.keyword,
+          scrapedAt: doc.scrapedAt,
+          pagesScraped: doc.pages?.length || 0,
+          rawResultsCount: totalResults,
+          hasRefinedData: !!refined,
+          refinedAt: refined?.refinedAt || null,
+          refinedResultsCount: refined?.results?.length || 0,
+          instructions: refined?.instructions || null
+        };
+      });
+
+      return new Response(
+        JSON.stringify({ success: true, count: keywords.length, keywords }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to list keywords: " + err.message }),
+        { status: 500, headers }
+      );
+    }
+  }
+
+  // GET /api/scrapes (List all raw scrape summaries)
+  if (url.pathname === "/api/scrapes" && req.method === "GET") {
+    try {
+      console.log("[API] Fetching all raw scrape summaries...");
+      const { connectToDatabase } = await import("../database/mongo");
+      const { CRAWLER_DATA_COLLECTION } = await import("../database/models");
+      const db = await connectToDatabase();
+
+      const docs = await db.collection(CRAWLER_DATA_COLLECTION)
+        .find({}, { projection: { _id: 0 } })
+        .sort({ scrapedAt: -1 })
+        .toArray();
+
+      const summaries = docs.map(doc => ({
+        keyword: doc.keyword,
+        scrapedAt: doc.scrapedAt,
+        pagesScraped: doc.pages?.length || 0,
+        rawResultsCount: doc.pages?.reduce((sum: number, p: any) => sum + (p.results?.length || 0), 0) || 0
+      }));
+
+      return new Response(
+        JSON.stringify({ success: true, count: summaries.length, scrapes: summaries }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to list scrapes: " + err.message }),
+        { status: 500, headers }
+      );
+    }
+  }
+
+  // GET /api/scrapes/:keyword (Read full raw scrape data for a keyword)
+  if (url.pathname.startsWith("/api/scrapes/") && req.method === "GET") {
+    try {
+      const encodedKeyword = url.pathname.slice("/api/scrapes/".length);
+      const keyword = decodeURIComponent(encodedKeyword).trim();
+      if (!keyword) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Keyword is required." }),
+          { status: 400, headers }
+        );
+      }
+
+      console.log(`[API] Fetching raw scrape data for keyword: "${keyword}"`);
+      const { connectToDatabase } = await import("../database/mongo");
+      const { CRAWLER_DATA_COLLECTION } = await import("../database/models");
+      const db = await connectToDatabase();
+      const doc = await db.collection(CRAWLER_DATA_COLLECTION).findOne(
+        { keyword },
+        { projection: { _id: 0 } }
+      );
+
+      if (!doc) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Raw scrape data not found for keyword: ${keyword}` }),
+          { status: 404, headers }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          keyword: doc.keyword,
+          scrapedAt: doc.scrapedAt,
+          pagesScraped: doc.pages?.length || 0,
+          rawResultsCount: doc.pages?.reduce((sum: number, p: any) => sum + (p.results?.length || 0), 0) || 0,
+          pages: doc.pages
+        }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to retrieve raw scrape data: " + err.message }),
+        { status: 500, headers }
+      );
     }
   }
 
@@ -361,13 +605,53 @@ export async function handleRequest(req: Request): Promise<Response> {
           success: true,
           domain: report.domain,
           saved: true,
-          path: `reports/${report.domain}.json`
+          path: `MongoDB collection: lighthouse_reports`
         }),
         { status: 200, headers }
       );
     } catch (err: any) {
       return new Response(
         JSON.stringify({ success: false, error: "Lighthouse generation failed: " + err.message }),
+        { status: 500, headers }
+      );
+    }
+  }
+
+  // GET /api/lighthouse (List all audited domains)
+  if (url.pathname === "/api/lighthouse" && req.method === "GET") {
+    try {
+      console.log("[API] Fetching all lighthouse report summaries...");
+      const { connectToDatabase } = await import("../database/mongo");
+      const { LIGHTHOUSE_REPORTS_COLLECTION } = await import("../database/models");
+      const db = await connectToDatabase();
+
+      const docs = await db.collection(LIGHTHOUSE_REPORTS_COLLECTION)
+        .find({}, { projection: { _id: 0, domain: 1, url: 1, generatedAt: 1, "report.lighthouseResult.categories": 1 } })
+        .sort({ generatedAt: -1 })
+        .toArray();
+
+      const summaries = docs.map(doc => {
+        const cats = doc.report?.lighthouseResult?.categories || {};
+        return {
+          domain: doc.domain,
+          url: doc.url,
+          generatedAt: doc.generatedAt,
+          scores: {
+            performance: cats.performance?.score ?? null,
+            accessibility: cats.accessibility?.score ?? null,
+            bestPractices: cats["best-practices"]?.score ?? null,
+            seo: cats.seo?.score ?? null
+          }
+        };
+      });
+
+      return new Response(
+        JSON.stringify({ success: true, count: summaries.length, reports: summaries }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to list lighthouse reports: " + err.message }),
         { status: 500, headers }
       );
     }
@@ -397,6 +681,8 @@ export async function handleRequest(req: Request): Promise<Response> {
       return new Response(
         JSON.stringify({
           domain: report.domain,
+          url: report.url,
+          generatedAt: report.generatedAt,
           report: report.report
         }),
         { status: 200, headers }
