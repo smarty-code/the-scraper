@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: the-scraper-backend
+    runtime: docker
+    plan: starter
+    region: oregon
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: HEADLESS
+        value: "true"
+      - key: MONGODB_DB_NAME
+        value: scraper_db
+      - key: MONGODB_URI
+        sync: false # User will be securely prompted in Render dashboard on first import
+      - key: CHATGPT_EMAIL
+        sync: false # User will be securely prompted in Render dashboard
+      - key: CHATGPT_PASSWORD
+        sync: false # User will be securely prompted in Render dashboard
