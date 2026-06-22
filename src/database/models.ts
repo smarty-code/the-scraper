@@ -33,6 +33,7 @@ export interface CrawlerDataDoc {
 }
 
 export interface RefinedResultItem {
+  id: string;
   rank: number;
   title: string;
   url: string;

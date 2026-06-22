@@ -537,6 +537,7 @@ async function compileAndSaveRefinedResults(jobId: string): Promise<void> {
 
   // Assign sequential rank 1..N
   const rankedResults = allRefinedResults.map((item, index) => ({
+    id: item.id || crypto.randomUUID(),
     rank: index + 1,
     title: item.title,
     url: item.url,

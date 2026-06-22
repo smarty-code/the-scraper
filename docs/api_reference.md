@@ -129,6 +129,7 @@ Retrieves stored AI-refined search results for a specific keyword.
       "instructions": "Only automated tools",
       "results": [
         {
+          "id": "https://howitzer.co-0",
           "rank": 1,
           "title": "Howitzer - First Reddit Marketing Tool",
           "url": "https://howitzer.co",
@@ -228,6 +229,7 @@ Triggers the full pipeline: Google SERP scrape â†’ save raw to `crawler_data` â†
       "refinedResultsCount": 4,
       "refinedResults": [
         {
+          "id": "e0a4f56b-9778-ec08-a2ae-aebcce4179e3",
           "rank": 1,
           "title": "Howitzer",
           "url": "https://howitzer.co",

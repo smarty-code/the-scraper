@@ -123,6 +123,7 @@ ${resultsListString}`;
         ? item.confidenceScore 
         : parseFloat(String(item.confidenceScore)) || 0.0;
       return {
+        id: crypto.randomUUID(),
         rank: item.rank || index + 1,
         title: item.title || "",
         url: item.url || "",

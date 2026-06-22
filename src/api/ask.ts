@@ -445,6 +445,7 @@ export async function handleRequest(req: Request): Promise<Response> {
             refinedResults.sort((a, b) => b.confidenceScore - a.confidenceScore);
             refinedResults = refinedResults.map((item, index) => ({
               ...item,
+              id: item.id || crypto.randomUUID(),
               rank: index + 1
             }));
 
@@ -642,12 +643,19 @@ export async function handleRequest(req: Request): Promise<Response> {
         );
       }
 
+      const mappedResults = Array.isArray(doc.results)
+        ? doc.results.map((item: any, index: number) => ({
+            ...item,
+            id: item.id || `${item.url}-${index}`
+          }))
+        : [];
+
       return new Response(
         JSON.stringify({
           keyword: doc.keyword,
           refinedAt: doc.refinedAt,
           instructions: doc.instructions,
-          results: doc.results
+          results: mappedResults
         }),
         { status: 200, headers }
       );
