@@ -1,5 +1,6 @@
 import "../polyfill";
 import { BrowserManager } from "./browser";
+import { closeDatabaseConnection } from "../database/mongo";
 
 // Set headed mode for interactive login
 process.env.HEADLESS = "false";
@@ -17,6 +18,7 @@ async function run() {
     console.error("Authentication flow encountered an error:", error);
   } finally {
     await manager.close();
+    await closeDatabaseConnection();
     process.exit(0);
   }
 }

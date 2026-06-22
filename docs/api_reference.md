@@ -246,6 +246,126 @@ Triggers the full pipeline: Google SERP scrape → save raw to `crawler_data` �
 
 ---
 
+## 🛡️ Stateful Scrape & Refinement Jobs
+
+These endpoints support stateful progress tracking, check-pointing, batching (by 10 items), and recovery/retry capabilities for the scraping and AI refinement process.
+
+### `POST /api/scrapes/jobs`
+Creates a new stateful job record in MongoDB, queues it for execution in the background queue, and returns the Job ID immediately.
+
+*   **Body (JSON)**:
+    ```json
+    {
+      "keyword": "reddit marketing tool",
+      "startPage": 1,
+      "endPage": 2,
+      "instructions": "Only include SaaS tools"
+    }
+    ```
+*   **Response (202 Accepted)**:
+    ```json
+    {
+      "success": true,
+      "jobId": "87b1c360-14e9-4e78-9571-b0db0ab5432a",
+      "status": "pending",
+      "message": "Scrape job created and queued successfully."
+    }
+    ```
+
+---
+
+### `GET /api/scrapes/jobs`
+Lists all scrape jobs stored in the database sorted by creation timestamp (newest first).
+
+*   **Response (200 OK)**:
+    ```json
+    {
+      "success": true,
+      "jobs": [
+        {
+          "jobId": "87b1c360-14e9-4e78-9571-b0db0ab5432a",
+          "keyword": "reddit marketing tool",
+          "status": "completed",
+          "createdAt": "2026-06-22T08:00:00.000Z"
+        }
+      ]
+    }
+    ```
+
+---
+
+### `GET /api/scrapes/jobs/:jobId`
+Retrieves detailed, real-time status and batch progress of a specific job.
+
+*   **Response (200 OK)**:
+    ```json
+    {
+      "success": true,
+      "job": {
+        "jobId": "87b1c360-14e9-4e78-9571-b0db0ab5432a",
+        "keyword": "reddit marketing tool",
+        "status": "partial_failed",
+        "scraping": {
+          "status": "completed",
+          "completedPagesCount": 2,
+          "totalPagesCount": 2,
+          "pages": [
+            { "pageNumber": 1, "status": "completed", "url": "..." },
+            { "pageNumber": 2, "status": "completed", "url": "..." }
+          ]
+        },
+        "refinement": {
+          "status": "partial_failed",
+          "totalBatches": 2,
+          "completedBatches": 1,
+          "failedBatches": 1,
+          "batches": [
+            {
+              "batchIndex": 0,
+              "status": "completed",
+              "attempts": 1,
+              "rawItemsCount": 10,
+              "startIndex": 0,
+              "endIndex": 9
+            },
+            {
+              "batchIndex": 1,
+              "status": "failed",
+              "attempts": 1,
+              "error": "Timeout waiting for ChatGPT response",
+              "rawItemsCount": 8,
+              "startIndex": 10,
+              "endIndex": 17
+            }
+          ]
+        }
+      }
+    }
+    ```
+
+---
+
+### `POST /api/scrapes/jobs/:jobId/retry`
+Queues a retry request for all failed elements of a job (or a specific failed batch).
+
+*   **Body (JSON - Optional)**:
+    ```json
+    {
+      "batchIndex": 1
+    }
+    ```
+    If `batchIndex` is omitted, the engine will retry all failed components (both failed scraping pages and failed refinement batches).
+*   **Response (202 Accepted)**:
+    ```json
+    {
+      "success": true,
+      "jobId": "87b1c360-14e9-4e78-9571-b0db0ab5432a",
+      "message": "Retry queued for batch index 1."
+    }
+    ```
+
+---
+
 ## ⚡ Lighthouse Audits (Write)
 
 ### `POST /api/lighthouse`
@@ -291,3 +411,38 @@ Opens a headed Chromium for manual ChatGPT login.
 
 ### `POST /session/reset`
 Clears saved cookies and closes the browser context.
+
+### `POST /session/cookies`
+Directly updates/imports the session cookies in MongoDB using a JSON list of cookies (Chrome extension format). This is useful for migrating cookie storage to MongoDB and automating session setups in cloud environments.
+
+*   **Body (JSON)**:
+    ```json
+    [
+      {
+        "domain": ".chatgpt.com",
+        "expirationDate": 1782725674.446028,
+        "hostOnly": false,
+        "httpOnly": false,
+        "name": "_puid",
+        "path": "/",
+        "sameSite": "lax",
+        "secure": true,
+        "session": false,
+        "storeId": null,
+        "value": "user-fOm7QLiPySyN2k8OF6YwhQDH:..."
+      }
+    ]
+    ```
+*   **Response (200)**:
+    ```json
+    {
+      "success": true,
+      "message": "Cookies updated in MongoDB successfully and active session reloaded."
+    }
+    ```
+*   **Example**:
+    ```bash
+    curl -X POST http://localhost:3000/session/cookies \
+      -H "Content-Type: application/json" \
+      -d '[{"name": "_puid", "value": "...", "domain": ".chatgpt.com", "path": "/"}]'
+    ```

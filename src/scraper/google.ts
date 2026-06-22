@@ -6,6 +6,79 @@ import { BrowserManager } from "../browser/browser";
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Scrapes a single Google Search Results page.
+ */
+export async function scrapeGooglePage(page: any, keyword: string, pageNum: number) {
+  const start = (pageNum - 1) * 10;
+  const url = `https://www.google.com/search?q=${encodeURIComponent(keyword)}&start=${start}`;
+  console.log(`[Scraper] Navigating to page ${pageNum}: ${url}`);
+
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  
+  // Random human-like delay between 2-4 seconds to avoid triggers/CAPTCHAs
+  const waitTime = 2000 + Math.random() * 2000;
+  await delay(waitTime);
+
+  const html = await page.content();
+
+  // Extract results from DOM
+  const results = await page.evaluate(() => {
+    const data: any[] = [];
+    const blocks = document.querySelectorAll("div.g");
+    
+    blocks.forEach((block, index) => {
+      const titleEl = block.querySelector("h3");
+      const linkEl = block.querySelector("a");
+      const snippetEl = block.querySelector(".VwiC3b, .yDAB2d, .s3v9zd, .MUbPIb, [style*='-webkit-line-clamp']");
+
+      if (titleEl && linkEl) {
+        data.push({
+          position: index + 1,
+          title: (titleEl as HTMLElement).innerText || "",
+          url: linkEl.href || "",
+          snippet: snippetEl ? (snippetEl as HTMLElement).innerText : ""
+        });
+      }
+    });
+
+    // Fallback: If div.g selector wasn't matched (e.g. Google changed markup), query by h3
+    if (data.length === 0) {
+      const headers = document.querySelectorAll("h3");
+      headers.forEach((h3, index) => {
+        const parentA = h3.closest("a");
+        if (parentA) {
+          let snippet = "";
+          let current = parentA.parentElement;
+          for (let i = 0; i < 3 && current; i++) {
+            const next = current.nextElementSibling;
+            if (next && (next.querySelector(".VwiC3b") || next.innerText.length > 50)) {
+              snippet = (next as HTMLElement).innerText;
+              break;
+            }
+            current = current.parentElement;
+          }
+          data.push({
+            position: index + 1,
+            title: (h3 as HTMLElement).innerText || "",
+            url: parentA.href || "",
+            snippet: snippet
+          });
+        }
+      });
+    }
+    return data;
+  });
+
+  console.log(`[Scraper] Page ${pageNum}: Extracted ${results.length} results.`);
+  return {
+    pageNumber: pageNum,
+    url,
+    html,
+    results
+  };
+}
+
+/**
  * Scrapes Google Search Results for a keyword across a range of pages.
  * Saves results as a structured JSON file.
  */
@@ -17,78 +90,13 @@ export async function scrapeGoogle(keyword: string, startPage: number, endPage: 
   const page = await browserManager.getPage();
 
   for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-    const start = (pageNum - 1) * 10;
-    const url = `https://www.google.com/search?q=${encodeURIComponent(keyword)}&start=${start}`;
-    console.log(`[Scraper] Navigating to page ${pageNum}: ${url}`);
-
     try {
-      await page.goto(url, { waitUntil: "domcontentloaded" });
-      
-      // Random human-like delay between 2-4 seconds to avoid triggers/CAPTCHAs
-      const waitTime = 2000 + Math.random() * 2000;
-      await delay(waitTime);
-
-      const html = await page.content();
-
-      // Extract results from DOM
-      const results = await page.evaluate(() => {
-        const data: any[] = [];
-        const blocks = document.querySelectorAll("div.g");
-        
-        blocks.forEach((block, index) => {
-          const titleEl = block.querySelector("h3");
-          const linkEl = block.querySelector("a");
-          const snippetEl = block.querySelector(".VwiC3b, .yDAB2d, .s3v9zd, .MUbPIb, [style*='-webkit-line-clamp']");
-
-          if (titleEl && linkEl) {
-            data.push({
-              position: index + 1,
-              title: (titleEl as HTMLElement).innerText || "",
-              url: linkEl.href || "",
-              snippet: snippetEl ? (snippetEl as HTMLElement).innerText : ""
-            });
-          }
-        });
-
-        // Fallback: If div.g selector wasn't matched (e.g. Google changed markup), query by h3
-        if (data.length === 0) {
-          const headers = document.querySelectorAll("h3");
-          headers.forEach((h3, index) => {
-            const parentA = h3.closest("a");
-            if (parentA) {
-              let snippet = "";
-              let current = parentA.parentElement;
-              for (let i = 0; i < 3 && current; i++) {
-                const next = current.nextElementSibling;
-                if (next && (next.querySelector(".VwiC3b") || next.innerText.length > 50)) {
-                  snippet = (next as HTMLElement).innerText;
-                  break;
-                }
-                current = current.parentElement;
-              }
-              data.push({
-                position: index + 1,
-                title: (h3 as HTMLElement).innerText || "",
-                url: parentA.href || "",
-                snippet: snippet
-              });
-            }
-          });
-        }
-        return data;
-      });
-
-      console.log(`[Scraper] Page ${pageNum}: Extracted ${results.length} results.`);
-      
-      pagesData.push({
-        pageNumber: pageNum,
-        url,
-        html,
-        results
-      });
-
+      const pageResult = await scrapeGooglePage(page, keyword, pageNum);
+      pagesData.push(pageResult);
     } catch (err: any) {
       console.error(`[Scraper] Failed to scrape page ${pageNum}:`, err);
+      const start = (pageNum - 1) * 10;
+      const url = `https://www.google.com/search?q=${encodeURIComponent(keyword)}&start=${start}`;
       pagesData.push({
         pageNumber: pageNum,
         url,

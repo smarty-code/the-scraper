@@ -10,7 +10,7 @@ export async function submitPrompt(page: Page, prompt: string): Promise<void> {
   const textareaSelector = "#prompt-textarea";
   
   console.log("[Prompt] Waiting for textarea to be active...");
-  await page.waitForSelector(textareaSelector, { state: "visible", timeout: 30000 });
+  await page.waitForSelector(textareaSelector, { state: "visible", timeout: 60000 });
   
   // 1. Check if ChatGPT already started generating (in case of auto-submit via the URL parameter)
   const isGeneratingAlready = await page.evaluate(() => {

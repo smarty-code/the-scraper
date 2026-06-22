@@ -1,7 +1,7 @@
 import { chromium, Browser, BrowserContext, Page } from "playwright";
 import { existsSync, readFileSync, unlinkSync } from "fs";
 import { join } from "path";
-import { getSessionStatePath, saveSessionState } from "./cookies";
+import { getSessionState, saveSessionState } from "./cookies";
 
 export class BrowserManager {
   private static instance: BrowserManager | null = null;
@@ -106,15 +106,15 @@ export class BrowserManager {
       ]
     });
 
-    const sessionPath = getSessionStatePath();
-    if (sessionPath) {
-      console.log(`[Browser] Loading existing session state from: ${sessionPath}`);
+    const sessionState = await getSessionState();
+    if (sessionState) {
+      console.log(`[Browser] Loading existing session state from MongoDB`);
     } else {
       console.log("[Browser] No session state found. Browser will start unauthenticated.");
     }
 
     this.context = await this.browser.newContext({
-      storageState: sessionPath,
+      storageState: sessionState,
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       viewport: { width: 1280, height: 720 },
       locale: "en-US",

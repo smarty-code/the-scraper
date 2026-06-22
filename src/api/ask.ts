@@ -1,7 +1,7 @@
 import { BrowserManager } from "../browser/browser";
 import { ConversationManager, AskResult } from "../chatgpt/conversation";
 import { TaskQueue } from "../queue/worker";
-import { hasSession, deleteSession } from "../browser/cookies";
+import { hasSession, deleteSession, importCookiesList } from "../browser/cookies";
 import { LighthouseEngine } from "../scraper/lighthouse";
 
 const queue = new TaskQueue(1);
@@ -156,6 +156,14 @@ export async function handleRequest(req: Request): Promise<Response> {
   </div>
 
   <div class="endpoint">
+    <h3><span class="method">POST</span><code>/session/cookies</code></h3>
+    <p>Update session cookies in MongoDB directly using a JSON list of Chrome-format cookies.</p>
+    <pre><code>curl -X POST http://localhost:${url.port || "3000"}/session/cookies \\
+  -H "Content-Type: application/json" \\
+  -d '[{"name": "_puid", "value": "...", "domain": ".chatgpt.com", "path": "/"}]'</code></pre>
+  </div>
+
+  <div class="endpoint">
     <h3><span class="method">POST</span><code>/scrape</code></h3>
     <p>Perform Google SERP scraping and run the AI refinement & ranking pipeline. Saves raw data to <code>crawler_data</code> and refined data (confidence >= 0.5) to <code>refined_scrapes</code> collections in MongoDB.</p>
     <pre><code>curl -X POST http://localhost:${url.port || "3000"}/scrape \\
@@ -179,6 +187,34 @@ export async function handleRequest(req: Request): Promise<Response> {
     <h3><span class="method">GET</span><code>/api/scrapes/:keyword</code></h3>
     <p>Retrieve full raw scrape data (all pages and organic results) for a specific keyword.</p>
     <pre><code>curl http://localhost:${url.port || "3000"}/api/scrapes/reddit%20marketing%20tool</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">POST</span><code>/api/scrapes/jobs</code></h3>
+    <p>Create a stateful scrape & AI refinement job. Queues the task and returns Job ID immediately.</p>
+    <pre><code>curl -X POST http://localhost:${url.port || "3000"}/api/scrapes/jobs \\
+  -H "Content-Type: application/json" \\
+  -d '{"keyword": "reddit marketing tool", "startPage": 1, "endPage": 2, "instructions": "Only tools"}'</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/scrapes/jobs</code></h3>
+    <p>List all scrape jobs in the database (sorted newest first).</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/scrapes/jobs</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/scrapes/jobs/:jobId</code></h3>
+    <p>Retrieve detailed real-time execution status and batch progress of a job.</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/scrapes/jobs/your-job-uuid-here</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">POST</span><code>/api/scrapes/jobs/:jobId/retry</code></h3>
+    <p>Retry failed components (scraping pages or refinement batches) of a job. Optional: pass <code>{"batchIndex": 1}</code> in body.</p>
+    <pre><code>curl -X POST http://localhost:${url.port || "3000"}/api/scrapes/jobs/your-job-uuid-here/retry \\
+  -H "Content-Type: application/json" \\
+  -d '{"batchIndex": 1}'</code></pre>
   </div>
 
   <div class="endpoint">
@@ -219,7 +255,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     return new Response(
       JSON.stringify({
         initialized: conversationManager !== null,
-        hasSession: hasSession(),
+        hasSession: await hasSession(),
         queue: {
           pending: queue.getPendingLength(),
           active: queue.getActiveCount()
@@ -260,6 +296,35 @@ export async function handleRequest(req: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: true, message: "Session cleared successfully." }), { status: 200, headers });
     } catch (err: any) {
       return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers });
+    }
+  }
+
+  // POST /session/cookies (Update cookies in MongoDB)
+  if (url.pathname === "/session/cookies" && req.method === "POST") {
+    try {
+      const body = await req.json();
+      if (!Array.isArray(body)) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Invalid payload. Expected a JSON array of cookies." }),
+          { status: 400, headers }
+        );
+      }
+
+      await importCookiesList(body);
+      
+      // Close browser and reset conversation manager to force browser to reload with the new session on next request
+      resetConversationManager();
+      await BrowserManager.getInstance().close();
+
+      return new Response(
+        JSON.stringify({ success: true, message: "Cookies updated in MongoDB successfully and active session reloaded." }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to update cookies: " + err.message }),
+        { status: 500, headers }
+      );
     }
   }
 
@@ -361,17 +426,34 @@ export async function handleRequest(req: Request): Promise<Response> {
           }
         }
 
-        // 2. Refine results via ChatGPT (saves filtered results to refined_scrapes collection in MongoDB)
+        // 2. Refine results via ChatGPT in batches of 10 (saves filtered results incrementally to refined_scrapes in MongoDB)
         const { refineResults, saveRefinedScrape } = await import("../scraper/refine");
         const manager = await getConversationManager();
         
         let refinedResults: any[] = [];
         let refinementError: string | null = null;
         try {
-          refinedResults = await refineResults(manager, keyword, allResults, instructions);
-          await saveRefinedScrape(keyword, instructions, refinedResults);
+          const batchSize = 10;
+          for (let i = 0; i < allResults.length; i += batchSize) {
+            const batch = allResults.slice(i, i + batchSize);
+            console.log(`[API] Refining batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(allResults.length / batchSize)} (size: ${batch.length})...`);
+            
+            const batchRefined = await refineResults(manager, keyword, batch, instructions);
+            refinedResults.push(...batchRefined);
+            
+            // Re-rank globally by sorting descending by confidenceScore
+            refinedResults.sort((a, b) => b.confidenceScore - a.confidenceScore);
+            refinedResults = refinedResults.map((item, index) => ({
+              ...item,
+              rank: index + 1
+            }));
+
+            // Save incremental results to database
+            await saveRefinedScrape(keyword, instructions, refinedResults);
+            console.log(`[API] Saved incremental refined results (count: ${refinedResults.length}) to MongoDB.`);
+          }
         } catch (refineErr: any) {
-          console.error("[API] Refinement failed:", refineErr);
+          console.error("[API] Refinement failed during batch processing:", refineErr);
           refinementError = refineErr.message || String(refineErr);
         }
 
@@ -409,6 +491,129 @@ export async function handleRequest(req: Request): Promise<Response> {
       );
     } catch (err: any) {
       return new Response(JSON.stringify({ success: false, error: "Scraping and refinement pipeline failed: " + err.message }), { status: 500, headers });
+    }
+  }
+
+  // POST /api/scrapes/jobs (Create and start a new stateful job)
+  if (url.pathname === "/api/scrapes/jobs" && req.method === "POST") {
+    try {
+      const body = await req.json();
+      const keyword = body.keyword;
+      const startPage = parseInt(body.startPage, 10) || 1;
+      const endPage = parseInt(body.endPage, 10) || startPage;
+      const instructions = body.instructions || "";
+
+      if (!keyword || typeof keyword !== "string") {
+        return new Response(JSON.stringify({ success: false, error: "keyword field is required and must be a string." }), { status: 400, headers });
+      }
+
+      console.log(`[API] Creating stateful scrape job for: "${keyword}"`);
+      const { createJob, executeJob } = await import("../scraper/jobManager");
+      const job = await createJob(keyword, startPage, endPage, instructions);
+
+      // Enqueue job execution asynchronously
+      queue.add(async () => {
+        try {
+          await executeJob(job.jobId, getConversationManager);
+        } catch (execErr) {
+          console.error(`[API] Error executing queued job ${job.jobId}:`, execErr);
+        }
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          jobId: job.jobId,
+          status: job.status,
+          message: "Scrape job created and queued successfully."
+        }),
+        { status: 202, headers }
+      );
+    } catch (err: any) {
+      return new Response(JSON.stringify({ success: false, error: "Failed to queue job: " + err.message }), { status: 500, headers });
+    }
+  }
+
+  // GET /api/scrapes/jobs (List all jobs history)
+  if (url.pathname === "/api/scrapes/jobs" && req.method === "GET") {
+    try {
+      const { connectToDatabase } = await import("../database/mongo");
+      const { SCRAPE_JOBS_COLLECTION } = await import("../database/models");
+      const db = await connectToDatabase();
+      const jobs = await db.collection(SCRAPE_JOBS_COLLECTION).find({}).sort({ createdAt: -1 }).toArray();
+
+      return new Response(
+        JSON.stringify({ success: true, jobs }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(JSON.stringify({ success: false, error: "Failed to fetch jobs: " + err.message }), { status: 500, headers });
+    }
+  }
+
+  // GET /api/scrapes/jobs/:jobId (Get detailed job status)
+  if (url.pathname.startsWith("/api/scrapes/jobs/") && !url.pathname.endsWith("/retry") && req.method === "GET") {
+    try {
+      const jobId = url.pathname.slice("/api/scrapes/jobs/".length);
+      if (!jobId) {
+        return new Response(JSON.stringify({ success: false, error: "jobId is required." }), { status: 400, headers });
+      }
+
+      const { connectToDatabase } = await import("../database/mongo");
+      const { SCRAPE_JOBS_COLLECTION } = await import("../database/models");
+      const db = await connectToDatabase();
+      const job = await db.collection(SCRAPE_JOBS_COLLECTION).findOne({ jobId });
+
+      if (!job) {
+        return new Response(JSON.stringify({ success: false, error: "Job not found." }), { status: 404, headers });
+      }
+
+      return new Response(JSON.stringify({ success: true, job }), { status: 200, headers });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ success: false, error: "Failed to fetch job details: " + err.message }), { status: 500, headers });
+    }
+  }
+
+  // POST /api/scrapes/jobs/:jobId/retry (Retry failed components of a job)
+  if (url.pathname.startsWith("/api/scrapes/jobs/") && url.pathname.endsWith("/retry") && req.method === "POST") {
+    try {
+      const parts = url.pathname.split("/");
+      const jobId = parts[4];
+      if (!jobId) {
+        return new Response(JSON.stringify({ success: false, error: "jobId is required." }), { status: 400, headers });
+      }
+
+      let body: any = {};
+      try {
+        body = await req.json();
+      } catch (e) {
+        // Body is optional
+      }
+      const batchIndex = body.batchIndex !== undefined ? parseInt(body.batchIndex, 10) : undefined;
+
+      const { retryJob } = await import("../scraper/jobManager");
+
+      // Start retry asynchronously
+      queue.add(async () => {
+        try {
+          await retryJob(jobId, getConversationManager, batchIndex);
+        } catch (execErr) {
+          console.error(`[API] Error executing retry for job ${jobId}:`, execErr);
+        }
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          jobId,
+          message: batchIndex !== undefined 
+            ? `Retry queued for batch index ${batchIndex}.`
+            : "Retry queued for all failed components of the job."
+        }),
+        { status: 202, headers }
+      );
+    } catch (err: any) {
+      return new Response(JSON.stringify({ success: false, error: "Failed to trigger retry: " + err.message }), { status: 500, headers });
     }
   }
 
