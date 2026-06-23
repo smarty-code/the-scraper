@@ -72,10 +72,12 @@ export async function createJob(
   return job;
 }
 
+import { AIProvider } from "../ai/provider";
+
 /**
  * Executes a job end-to-end, updating states incrementally.
  */
-export async function executeJob(jobId: string, getConversationManager: () => Promise<any>): Promise<void> {
+export async function executeJob(jobId: string, getAIProvider: () => Promise<AIProvider>): Promise<void> {
   const db = await connectToDatabase();
   console.log(`[JobManager] Executing job ${jobId}...`);
 
@@ -302,7 +304,7 @@ export async function executeJob(jobId: string, getConversationManager: () => Pr
       }
     );
 
-    const chatManager = await getConversationManager();
+    const chatManager = await getAIProvider();
     let hasAnyFailedBatch = false;
 
     // Process batches sequentially
@@ -422,7 +424,7 @@ export async function executeJob(jobId: string, getConversationManager: () => Pr
  */
 export async function retryJob(
   jobId: string,
-  getConversationManager: () => Promise<any>,
+  getAIProvider: () => Promise<AIProvider>,
   specificBatchIndex?: number
 ): Promise<void> {
   const db = await connectToDatabase();
@@ -514,7 +516,7 @@ export async function retryJob(
 
   // Enqueue execution
   // We trigger it asynchronously
-  executeJob(jobId, getConversationManager);
+  executeJob(jobId, getAIProvider);
 }
 
 /**

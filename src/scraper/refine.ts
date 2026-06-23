@@ -1,4 +1,4 @@
-import { ConversationManager } from "../chatgpt/conversation";
+import { AIProvider } from "../ai/provider";
 import { connectToDatabase } from "../database/mongo";
 import { 
   REFINED_SCRAPES_COLLECTION, 
@@ -40,15 +40,15 @@ function cleanAndParseJSON(text: string): any {
     } catch {}
   }
 
-  throw new Error("Could not extract valid JSON from ChatGPT response");
+  throw new Error("Could not extract valid JSON from AI response");
 }
 
 /**
- * Orchestrates sending search results to ChatGPT for filtering and ranking.
+ * Orchestrates sending search results to the AI for filtering and ranking.
  * Returns only results with confidence score >= 0.5.
  */
 export async function refineResults(
-  conversationManager: ConversationManager,
+  aiProvider: AIProvider,
   keyword: string,
   results: Array<{ title: string; url: string; snippet: string }>,
   userInstructions?: string
@@ -97,14 +97,14 @@ Expected JSON format:
 Here are the search results to refine:
 ${resultsListString}`;
 
-  console.log(`[Refinement] Submitting refinement prompt to ChatGPT (results count: ${results.length})...`);
-  const askResult = await conversationManager.ask(prompt, true);
+  console.log(`[Refinement] Submitting refinement prompt to AI provider (results count: ${results.length})...`);
+  const askResult = await aiProvider.ask(prompt, true);
 
   if (!askResult.success || !askResult.answer) {
-    throw new Error(`Failed to get response from ChatGPT: ${askResult.error || "Unknown error"}`);
+    throw new Error(`Failed to get response from AI: ${askResult.error || "Unknown error"}`);
   }
 
-  console.log("[Refinement] Parsing ChatGPT response...");
+  console.log("[Refinement] Parsing AI response...");
   const parsed = cleanAndParseJSON(askResult.answer);
 
   let refinedArray: any[] = [];

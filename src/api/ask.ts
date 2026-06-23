@@ -1,31 +1,12 @@
 import { BrowserManager } from "../browser/browser";
-import { ConversationManager, AskResult } from "../chatgpt/conversation";
+import { AskResult } from "../chatgpt/conversation";
 import { TaskQueue } from "../queue/worker";
 import { hasSession, deleteSession, importCookiesList } from "../browser/cookies";
 import { LighthouseEngine } from "../scraper/lighthouse";
+import { AIProvider, getAIProvider, resetAIProvider, isProviderInitialized } from "../ai/provider";
 
 const queue = new TaskQueue(1);
-let conversationManager: ConversationManager | null = null;
 const lighthouseEngine = new LighthouseEngine();
-
-/**
- * Lazy loads and returns the conversation manager.
- * If browser context was closed, recreates it.
- */
-async function getConversationManager(): Promise<ConversationManager> {
-  const page = await BrowserManager.getInstance().getPage();
-  if (!conversationManager) {
-    conversationManager = new ConversationManager(page);
-  }
-  return conversationManager;
-}
-
-/**
- * Reset conversation manager cache (used on error).
- */
-function resetConversationManager() {
-  conversationManager = null;
-}
 
 /**
  * Helper to parse, extract, or convert the ChatGPT generated text to a JSON payload.
@@ -254,7 +235,7 @@ export async function handleRequest(req: Request): Promise<Response> {
   if (url.pathname === "/status" && req.method === "GET") {
     return new Response(
       JSON.stringify({
-        initialized: conversationManager !== null,
+        initialized: isProviderInitialized(),
         hasSession: await hasSession(),
         queue: {
           pending: queue.getPendingLength(),
@@ -271,7 +252,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     // because manual login might take minutes.
     setTimeout(async () => {
       try {
-        resetConversationManager();
+        resetAIProvider();
         await BrowserManager.getInstance().runInteractiveLogin();
       } catch (err) {
         console.error("[API] Manual login failed:", err);
@@ -290,7 +271,7 @@ export async function handleRequest(req: Request): Promise<Response> {
   // POST /session/reset (Clear session cache)
   if (url.pathname === "/session/reset" && req.method === "POST") {
     try {
-      resetConversationManager();
+      resetAIProvider();
       await BrowserManager.getInstance().close();
       await deleteSession();
       return new Response(JSON.stringify({ success: true, message: "Session cleared successfully." }), { status: 200, headers });
@@ -312,8 +293,8 @@ export async function handleRequest(req: Request): Promise<Response> {
 
       await importCookiesList(body);
       
-      // Close browser and reset conversation manager to force browser to reload with the new session on next request
-      resetConversationManager();
+      // Close browser and reset AI provider to force reload with the new session on next request
+      resetAIProvider();
       await BrowserManager.getInstance().close();
 
       return new Response(
@@ -360,16 +341,16 @@ export async function handleRequest(req: Request): Promise<Response> {
       // Add prompt execution to the task queue
       const result = await queue.add<AskResult>(async () => {
         try {
-          const manager = await getConversationManager();
-          let res = await manager.ask(prompt, deleteConv);
+          const provider = await getAIProvider();
+          let res = await provider.ask(prompt, deleteConv);
           
           // Re-try once if target was closed/crashed
           if (!res.success && res.error && (res.error.includes("Target closed") || res.error.includes("context has been closed"))) {
             console.log("[API] Target closed. Re-initializing browser session and retrying...");
-            resetConversationManager();
+            resetAIProvider();
             await BrowserManager.getInstance().close();
-            const retryManager = await getConversationManager();
-            res = await retryManager.ask(prompt, deleteConv);
+            const retryProvider = await getAIProvider();
+            res = await retryProvider.ask(prompt, deleteConv);
           }
           
           return res;
@@ -426,9 +407,9 @@ export async function handleRequest(req: Request): Promise<Response> {
           }
         }
 
-        // 2. Refine results via ChatGPT in batches of 10 (saves filtered results incrementally to refined_scrapes in MongoDB)
+        // 2. Refine results via AI provider in batches of 10 (saves filtered results incrementally to refined_scrapes in MongoDB)
         const { refineResults, saveRefinedScrape } = await import("../scraper/refine");
-        const manager = await getConversationManager();
+        const provider = await getAIProvider();
         
         let refinedResults: any[] = [];
         let refinementError: string | null = null;
@@ -438,7 +419,7 @@ export async function handleRequest(req: Request): Promise<Response> {
             const batch = allResults.slice(i, i + batchSize);
             console.log(`[API] Refining batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(allResults.length / batchSize)} (size: ${batch.length})...`);
             
-            const batchRefined = await refineResults(manager, keyword, batch, instructions);
+            const batchRefined = await refineResults(provider, keyword, batch, instructions);
             refinedResults.push(...batchRefined);
             
             // Re-rank globally by sorting descending by confidenceScore
@@ -515,7 +496,7 @@ export async function handleRequest(req: Request): Promise<Response> {
       // Enqueue job execution asynchronously
       queue.add(async () => {
         try {
-          await executeJob(job.jobId, getConversationManager);
+          await executeJob(job.jobId, getAIProvider);
         } catch (execErr) {
           console.error(`[API] Error executing queued job ${job.jobId}:`, execErr);
         }
@@ -597,7 +578,7 @@ export async function handleRequest(req: Request): Promise<Response> {
       // Start retry asynchronously
       queue.add(async () => {
         try {
-          await retryJob(jobId, getConversationManager, batchIndex);
+          await retryJob(jobId, getAIProvider, batchIndex);
         } catch (execErr) {
           console.error(`[API] Error executing retry for job ${jobId}:`, execErr);
         }
