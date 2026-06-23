@@ -19,6 +19,9 @@ export async function getAIProvider(): Promise<AIProvider> {
   if (providerType === "gemini") {
     const { GeminiProvider } = await import("../gemini/client");
     activeProvider = new GeminiProvider();
+  } else if (providerType === "bedrock") {
+    const { BedrockProvider } = await import("../bedrock/client");
+    activeProvider = new BedrockProvider();
   } else {
     // Default to ChatGPT via Playwright browser
     const { ConversationManager } = await import("../chatgpt/conversation");

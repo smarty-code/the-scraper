@@ -85,6 +85,22 @@ bun run lighthouse "https://github.com"
 
 ---
 
+## ⏳ Standalone Website Age Audit CLI
+
+You can audit the archive age of any URL directly from the CLI. This checks the Wayback Machine availability, pulls the monthly archive sparklines, computes the age relative to 2026, and saves the record in MongoDB:
+
+```bash
+bun run src/scraper/websiteAge.ts "<url>"
+```
+
+### Example CLI Website Age Audit:
+```bash
+# Run audit and save report in MongoDB website_ages collection
+bun run src/scraper/websiteAge.ts "reddit.com"
+```
+
+---
+
 ## 📡 API Endpoints
 
 ### 1. `POST /ask`
@@ -255,6 +271,103 @@ Retrieves the saved Lighthouse audit report for a specific domain name.
 * **Example CURL**:
   ```bash
   curl http://localhost:3000/api/lighthouse/github.com
+  ```
+
+---
+
+### 8. `POST /api/age`
+Checks Wayback Machine availability and sparkline records for a URL. Stores the age details in MongoDB.
+
+* **URL**: `/api/age`
+* **Method**: `POST`
+* **Body (JSON)**:
+  ```json
+  {
+    "url": "https://reddit.com"
+  }
+  ```
+* **Response (JSON)**:
+  ```json
+  {
+    "success": true,
+    "domain": "reddit.com",
+    "url": "https://reddit.com",
+    "checkedAt": "2026-06-23T10:28:42.993Z",
+    "available": true,
+    "earliestArchiveDate": "2002-07",
+    "earliestYear": 2002,
+    "earliestMonth": 7,
+    "ageInYears": 24,
+    "saved": true,
+    "path": "MongoDB collection: website_ages"
+  }
+  ```
+* **Example CURL**:
+  ```bash
+  curl -X POST http://localhost:3000/api/age \
+       -H "Content-Type: application/json" \
+       -d '{"url": "reddit.com"}'
+  ```
+
+---
+
+### 9. `GET /api/age`
+Lists summaries of all checked websites and their computed ages.
+
+* **URL**: `/api/age`
+* **Method**: `GET`
+* **Response (JSON)**:
+  ```json
+  {
+    "success": true,
+    "count": 1,
+    "ages": [
+      {
+        "domain": "reddit.com",
+        "url": "https://reddit.com",
+        "checkedAt": "2026-06-23T10:28:42.993Z",
+        "available": true,
+        "earliestArchiveDate": "2002-07",
+        "earliestYear": 2002,
+        "earliestMonth": 7,
+        "ageInYears": 24
+      }
+    ]
+  }
+  ```
+* **Example CURL**:
+  ```bash
+  curl http://localhost:3000/api/age
+  ```
+
+---
+
+### 10. `GET /api/age/:domain`
+Retrieves the detailed website age report and full raw Wayback Machine sparkline history for a specific domain.
+
+* **URL**: `/api/age/reddit.com`
+* **Method**: `GET`
+* **Response (JSON)**:
+  ```json
+  {
+    "url": "https://reddit.com",
+    "domain": "reddit.com",
+    "checkedAt": "2026-06-23T10:28:42.993Z",
+    "available": true,
+    "earliestArchiveDate": "2002-07",
+    "earliestYear": 2002,
+    "earliestMonth": 7,
+    "ageInYears": 24,
+    "sparklineData": {
+      "years": {
+        "2002": [0,0,0,0,0,0,1,1,2,0,2,0]
+      }
+    }
+  }
+  ```
+* **Example CURL**:
+  ```bash
+  curl http://localhost:3000/api/age/reddit.com
   ```
 
 ---

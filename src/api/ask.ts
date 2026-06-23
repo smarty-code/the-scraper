@@ -3,10 +3,12 @@ import { AskResult } from "../chatgpt/conversation";
 import { TaskQueue } from "../queue/worker";
 import { hasSession, deleteSession, importCookiesList } from "../browser/cookies";
 import { LighthouseEngine } from "../scraper/lighthouse";
+import { WebsiteAgeEngine } from "../scraper/websiteAge";
 import { AIProvider, getAIProvider, resetAIProvider, isProviderInitialized } from "../ai/provider";
 
 const queue = new TaskQueue(1);
 const lighthouseEngine = new LighthouseEngine();
+const websiteAgeEngine = new WebsiteAgeEngine();
 
 /**
  * Helper to parse, extract, or convert the ChatGPT generated text to a JSON payload.
@@ -222,6 +224,26 @@ export async function handleRequest(req: Request): Promise<Response> {
     <h3><span class="method">GET</span><code>/api/lighthouse/:domain</code></h3>
     <p>Retrieve the full Lighthouse audit report for a specific domain from MongoDB.</p>
     <pre><code>curl http://localhost:${url.port || "3000"}/api/lighthouse/github.com</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">POST</span><code>/api/age</code></h3>
+    <p>Submit a URL or domain to check its age using Wayback Machine history. Stored in MongoDB.</p>
+    <pre><code>curl -X POST http://localhost:${url.port || "3000"}/api/age \\
+  -H "Content-Type: application/json" \\
+  -d '{"url": "https://reddit.com"}'</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/age</code></h3>
+    <p>List all checked websites with their age metadata.</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/age</code></pre>
+  </div>
+
+  <div class="endpoint">
+    <h3><span class="method">GET</span><code>/api/age/:domain</code></h3>
+    <p>Retrieve the website age report and sparkline history for a specific domain.</p>
+    <pre><code>curl http://localhost:${url.port || "3000"}/api/age/reddit.com</code></pre>
   </div>
 </body>
 </html>`;
@@ -884,6 +906,105 @@ export async function handleRequest(req: Request): Promise<Response> {
     } catch (err: any) {
       return new Response(
         JSON.stringify({ success: false, error: "Failed to retrieve Lighthouse report: " + err.message }),
+        { status: 500, headers }
+      );
+    }
+  }
+
+  // POST /api/age (Generate/Update Website Age report)
+  if (url.pathname === "/api/age" && req.method === "POST") {
+    try {
+      const body = await req.json();
+      const targetUrl = body.url;
+
+      if (!targetUrl || typeof targetUrl !== "string") {
+        return new Response(
+          JSON.stringify({ success: false, error: "url field is required and must be a string." }),
+          { status: 400, headers }
+        );
+      }
+
+      console.log(`[API] Website age request received for URL: ${targetUrl}`);
+      const report = await websiteAgeEngine.generate(targetUrl);
+      await websiteAgeEngine.save(report);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          domain: report.domain,
+          url: report.url,
+          checkedAt: report.checkedAt,
+          available: report.available,
+          earliestArchiveDate: report.earliestArchiveDate,
+          earliestYear: report.earliestYear,
+          earliestMonth: report.earliestMonth,
+          ageInYears: report.ageInYears,
+          saved: true,
+          path: `MongoDB collection: website_ages`
+        }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Website age retrieval failed: " + err.message }),
+        { status: 500, headers }
+      );
+    }
+  }
+
+  // GET /api/age (List all website ages checked)
+  if (url.pathname === "/api/age" && req.method === "GET") {
+    try {
+      console.log("[API] Fetching all website age summaries...");
+      const { connectToDatabase } = await import("../database/mongo");
+      const { WEBSITE_AGES_COLLECTION } = await import("../database/models");
+      const db = await connectToDatabase();
+
+      const docs = await db.collection(WEBSITE_AGES_COLLECTION)
+        .find({}, { projection: { _id: 0, sparklineData: 0 } })
+        .sort({ checkedAt: -1 })
+        .toArray();
+
+      return new Response(
+        JSON.stringify({ success: true, count: docs.length, ages: docs }),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to list website ages: " + err.message }),
+        { status: 500, headers }
+      );
+    }
+  }
+
+  // GET /api/age/:domain (Read existing Website Age report)
+  if (url.pathname.startsWith("/api/age/") && req.method === "GET") {
+    try {
+      const domain = url.pathname.slice("/api/age/".length);
+      if (!domain) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Domain name is required." }),
+          { status: 400, headers }
+        );
+      }
+
+      console.log(`[API] Website age get report request received for domain: ${domain}`);
+      const report = await websiteAgeEngine.get(domain);
+
+      if (!report) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Website age report not found for domain: ${domain}` }),
+          { status: 404, headers }
+        );
+      }
+
+      return new Response(
+        JSON.stringify(report),
+        { status: 200, headers }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to retrieve website age report: " + err.message }),
         { status: 500, headers }
       );
     }

@@ -4,6 +4,7 @@ import { Db } from "mongodb";
 export const CRAWLER_DATA_COLLECTION = "crawler_data";
 export const REFINED_SCRAPES_COLLECTION = "refined_scrapes";
 export const LIGHTHOUSE_REPORTS_COLLECTION = "lighthouse_reports";
+export const WEBSITE_AGES_COLLECTION = "website_ages";
 export const SCRAPE_JOBS_COLLECTION = "scrape_jobs";
 export const BROWSER_SESSIONS_COLLECTION = "browser_sessions";
 
@@ -59,6 +60,21 @@ export interface LighthouseReportDoc {
   domain: string;
   generatedAt: string;
   report: any; // Raw Google PageSpeed Insights JSON payload
+}
+
+/**
+ * Schema for website ages stored in MongoDB
+ */
+export interface WebsiteAgeDoc {
+  url: string;
+  domain: string;
+  checkedAt: string; // ISO string
+  available: boolean;
+  earliestArchiveDate?: string; // e.g. "2002-07"
+  earliestYear?: number;
+  earliestMonth?: number;
+  ageInYears?: number;
+  sparklineData?: any; // Raw Wayback sparkline JSON response
 }
 
 // Scrape & Refinement Jobs State Tracking Interfaces
@@ -153,6 +169,13 @@ export async function initializeDatabase(db: Db): Promise<void> {
       { unique: true, name: "idx_browser_sessions_sessionId" }
     );
     console.log(`[Database] Index created: ${BROWSER_SESSIONS_COLLECTION} (sessionId)`);
+
+    // 6. Website Ages unique index on domain
+    await db.collection(WEBSITE_AGES_COLLECTION).createIndex(
+      { domain: 1 },
+      { unique: true, name: "idx_website_ages_domain" }
+    );
+    console.log(`[Database] Index created: ${WEBSITE_AGES_COLLECTION} (domain)`);
 
   } catch (err: any) {
     console.error("[Database] Error creating database indexes:", err);

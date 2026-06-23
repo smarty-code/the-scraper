@@ -390,6 +390,95 @@ Generates a PageSpeed audit for a URL and saves it to MongoDB. Does NOT use the 
 
 ---
 
+## ⏳ Website Age Audits (Write & Read)
+
+### `POST /api/age`
+Checks Wayback Machine availability and sparkline records for a URL or domain. If available, parses the earliest archive year/month and computes the age relative to 2026. Stores results in the `website_ages` MongoDB collection.
+
+*   **Body (JSON)**:
+    ```json
+    { "url": "https://reddit.com" }
+    ```
+*   **Response (200)**:
+    ```json
+    {
+      "success": true,
+      "domain": "reddit.com",
+      "url": "https://reddit.com",
+      "checkedAt": "2026-06-23T10:28:42.993Z",
+      "available": true,
+      "earliestArchiveDate": "2002-07",
+      "earliestYear": 2002,
+      "earliestMonth": 7,
+      "ageInYears": 24,
+      "saved": true,
+      "path": "MongoDB collection: website_ages"
+    }
+    ```
+*   **Example**:
+    ```bash
+    curl -X POST http://localhost:3000/api/age \
+      -H "Content-Type: application/json" \
+      -d '{"url": "reddit.com"}'
+    ```
+
+---
+
+### `GET /api/age`
+Lists summaries of all checked websites and their archive age metrics stored in MongoDB (excludes heavy raw sparkline data).
+
+*   **Response (200)**:
+    ```json
+    {
+      "success": true,
+      "count": 2,
+      "ages": [
+        {
+          "domain": "reddit.com",
+          "url": "https://reddit.com",
+          "checkedAt": "2026-06-23T10:28:42.993Z",
+          "available": true,
+          "earliestArchiveDate": "2002-07",
+          "earliestYear": 2002,
+          "earliestMonth": 7,
+          "ageInYears": 24
+        }
+      ]
+    }
+    ```
+*   **Example**:
+    ```bash
+    curl http://localhost:3000/api/age
+    ```
+
+---
+
+### `GET /api/age/:domain`
+Retrieves the detailed website age report and full raw Wayback Machine sparkline history for a specific domain.
+
+*   **URL Parameter**: `domain` — domain name (e.g. `reddit.com`)
+*   **Response (200)**:
+    ```json
+    {
+      "url": "https://reddit.com",
+      "domain": "reddit.com",
+      "checkedAt": "2026-06-23T10:28:42.993Z",
+      "available": true,
+      "earliestArchiveDate": "2002-07",
+      "earliestYear": 2002,
+      "earliestMonth": 7,
+      "ageInYears": 24,
+      "sparklineData": { "years": { "2002": [0,0,0,0,0,0,1,1,2,0,2,0] } }
+    }
+    ```
+*   **Response (404)**: `{ "success": false, "error": "Website age report not found for domain: ..." }`
+*   **Example**:
+    ```bash
+    curl http://localhost:3000/api/age/reddit.com
+    ```
+
+---
+
 ## 🤖 ChatGPT Prompts
 
 ### `POST /ask`

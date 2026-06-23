@@ -65,3 +65,19 @@ Browser automation tasks (e.g. searching Google, querying ChatGPT) are single-th
 *   **Single Concurrency**: Implements a simple FIFO (First In, First Out) queue with a concurrency limit of `1`.
 *   **Async Processing**: Wraps requests in promises. The calling route enqueues a job, waits for its resolution block, and returns the response once the queue worker completes the task.
 *   **Error Boundaries**: Guarantees that if a task fails or times out, the queue worker automatically resolves/rejects, logs the stack trace, and moves directly to the next pending item.
+
+---
+
+## ⏳ 6. Website Age Audit Engine (`src/scraper/websiteAge.ts`)
+
+Audits the age of website domains by querying Wayback Machine history.
+
+*   **Bypassing the Browser Queue**: Like the Lighthouse Engine, website age auditing does not use headless browser pages. It executes simple HTTP fetches directly to the Wayback Machine API endpoints, allowing parallel executions that bypass the browser single-concurrency queue.
+*   **Double-Check Sequence (Availability First)**: 
+    *   First checks the Wayback Availability API (`https://archive.org/wayback/available?url=<domain>`).
+    *   If status is 200 and closest snapshots are available, it fires the sparkline API fetch. If not, it saves the domain with `available: false` and skips the main sparkline request.
+*   **Sparkline Parsing Algorithm**: 
+    *   Fetches month-by-month archive counts across all years (`https://web.archive.org/__wb/sparkline?output=json&url=<url>&collection=web`).
+    *   Sorts all year keys ascending and finds the first month index with an archive count greater than `0`.
+    *   Computes age in years relative to the current baseline year (2026).
+*   **MongoDB Schema (`website_ages`)**: Stores normalized URLs, checked dates, availability status, earliest archive year/month details, age in years, and raw sparkline data under the `website_ages` collection. Uses a unique index on the `domain` field to prevent duplicate checks.
